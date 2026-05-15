@@ -1,12 +1,13 @@
 # 语音转文字（中文）
 
-这是一个 Windows 本地小工具，用 Python + Tkinter 写成。它可以选择音频文件，调用 Whisper 做中文转写，并输出：
+这是一个 Windows 本地小工具，用 Python + Tkinter 写成。它可以选择一个或多个音频文件，调用 Whisper 做中文转写，并输出：
 
 - Word 文档：`*_语音转文字结果.docx`
 - 正式转写 TXT：`*_正式转写.txt`
 - 低置信候选 TXT：`*_低置信候选.txt`
 - 字幕 SRT：`*_正式转写.srt`
 - JSON 报告：`*_report.json` 和 `*_raw.json`
+- 批量清单：`batch_manifest_*.json`
 
 ## 为什么这样写
 
@@ -17,6 +18,7 @@
 - 可选“降噪增强”，先用 ffmpeg 做高通、低通、频谱降噪和响度归一。
 - 可选“严格过滤低置信片段”，把疑似非语音、重复、低置信内容放到候选区，不混入正式正文。
 - 明显重复的幻觉文本会从候选区移除，只保留在 JSON 报告中便于排查。
+- 每个报告会写入质量摘要，区分“较干净”“可用，建议抽查”“可用但需重点复核”“需要人工核听”。
 
 ## 安装
 
@@ -40,11 +42,12 @@ run.bat
 
 ## 使用建议
 
-1. 选择音频文件。
+1. 选择音频文件，可以一次多选。
 2. 输出目录默认是本文件夹下的 `output`。
 3. 模型建议先用 `base`。
 4. 对会议、远距离、噪声录音，建议勾选“降噪增强”和“严格过滤低置信片段”。
 5. 如果正式正文为空，请查看“低置信候选片段”，它只适合作为人工核听定位线索。
+6. 批量转写会在输出目录生成 `batch_manifest_*.json`，方便回看每个文件的成功、失败和输出路径。
 
 ## 命令行用法
 
@@ -52,6 +55,18 @@ run.bat
 
 ```bat
 python app.py "C:\path\to\audio.m4a" --output ".\output" --model base --enhance --strict
+```
+
+批量转写：
+
+```bat
+python app.py "C:\path\to\a.m4a" "C:\path\to\b.mp3" --output ".\output" --model base
+```
+
+命令行默认开启降噪增强和严格过滤；需要保留更多片段时可以加：
+
+```bat
+python app.py "C:\path\to\audio.m4a" --loose --no-enhance
 ```
 
 ## 参考项目

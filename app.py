@@ -9,7 +9,7 @@ import sys
 import threading
 from datetime import datetime
 from pathlib import Path
-from typing import Callable, Dict, Iterable, List, Optional, Tuple
+from typing import Any, Callable, Dict, Iterable, List, Optional, Sequence, Tuple
 
 import tkinter as tk
 from tkinter import filedialog, messagebox, ttk
@@ -28,6 +28,7 @@ SUPPORTED_AUDIO = (
     "*.ogg",
     "*.wma",
 )
+SUPPORTED_EXTENSIONS = tuple(pattern.replace("*", "").lower() for pattern in SUPPORTED_AUDIO)
 
 
 def now_stamp() -> str:
@@ -51,6 +52,9 @@ def fmt_srt_time(seconds: float) -> str:
     seconds = max(0.0, float(seconds or 0))
     whole = int(seconds)
     ms = int(round((seconds - whole) * 1000))
+    if ms >= 1000:
+        whole += ms // 1000
+        ms = ms % 1000
     h, rem = divmod(whole, 3600)
     m, s = divmod(rem, 60)
     return f"{h:02d}:{m:02d}:{s:02d},{ms:03d}"
@@ -58,6 +62,95 @@ def fmt_srt_time(seconds: float) -> str:
 
 def strip_text(text: str) -> str:
     return re.sub(r"\s+", " ", (text or "").strip())
+
+
+def is_supported_audio(path: Path) -> bool:
+    return path.suffix.lower() in SUPPORTED_EXTENSIONS
+
+
+def parse_audio_paths_text(raw: str) -> List[Path]:
+    chunks = [item.strip().strip('"') for item in re.split(r"[;\n]+", raw or "")]
+    return [Path(item) for item in chunks if item]
+
+
+def describe_audio_paths(paths: Sequence[Path]) -> str:
+    if not paths:
+        return ""
+    if len(paths) == 1:
+        return str(paths[0])
+    names = "；".join(path.name for path in paths[:4])
+    suffix = " 等" if len(paths) > 4 else ""
+    return f"已选择 {len(paths)} 个文件：{names}{suffix}"
+
+
+def fmt_duration_seconds(seconds: Optional[float]) -> str:
+    if seconds is None:
+        return "未知"
+    seconds = max(0.0, float(seconds))
+    h, rem = divmod(int(round(seconds)), 3600)
+    m, s = divmod(rem, 60)
+    if h:
+        return f"{h}小时{m:02d}分{s:02d}秒"
+    if m:
+        return f"{m}分{s:02d}秒"
+    return f"{s}秒"
+
+
+def parse_duration_seconds(duration: Optional[str]) -> Optional[float]:
+    if not duration:
+        return None
+    match = re.match(r"(\d+):(\d+):(\d+(?:\.\d+)?)", duration)
+    if not match:
+        return None
+    hours, minutes, seconds = match.groups()
+    return int(hours) * 3600 + int(minutes) * 60 + float(seconds)
+
+
+def segment_seconds(segment: dict) -> float:
+    return max(0.0, float(segment.get("end", 0) or 0) - float(segment.get("start", 0) or 0))
+
+
+def build_quality_summary(
+    reliable: Sequence[dict],
+    candidates: Sequence[dict],
+    discarded: Sequence[dict],
+    duration: Optional[str],
+) -> Dict[str, Any]:
+    reliable_seconds = sum(segment_seconds(seg) for seg in reliable)
+    candidate_seconds = sum(segment_seconds(seg) for seg in candidates)
+    discarded_seconds = sum(segment_seconds(seg) for seg in discarded)
+    audio_seconds = parse_duration_seconds(duration)
+
+    if not reliable:
+        label = "需要人工核听"
+    elif candidate_seconds + discarded_seconds > reliable_seconds * 0.6:
+        label = "可用但需重点复核"
+    elif candidates or discarded:
+        label = "可用，建议抽查"
+    else:
+        label = "较干净"
+
+    reliable_ratio = None if not audio_seconds else round(reliable_seconds / audio_seconds, 4)
+    return {
+        "quality_label": label,
+        "audio_seconds": audio_seconds,
+        "reliable_count": len(reliable),
+        "candidate_count": len(candidates),
+        "discarded_count": len(discarded),
+        "reliable_seconds": round(reliable_seconds, 2),
+        "candidate_seconds": round(candidate_seconds, 2),
+        "discarded_seconds": round(discarded_seconds, 2),
+        "reliable_ratio_of_audio": reliable_ratio,
+    }
+
+
+def format_quality_summary(summary: Dict[str, Any]) -> str:
+    return (
+        f"{summary['quality_label']}；可靠 {summary['reliable_count']} 条/"
+        f"{fmt_duration_seconds(summary['reliable_seconds'])}，低置信 {summary['candidate_count']} 条/"
+        f"{fmt_duration_seconds(summary['candidate_seconds'])}，丢弃 {summary['discarded_count']} 条/"
+        f"{fmt_duration_seconds(summary['discarded_seconds'])}"
+    )
 
 
 def looks_repetitive(text: str) -> bool:
@@ -266,6 +359,7 @@ def write_docx(
     model_name: str,
     enhanced: bool,
     strict: bool,
+    summary: Dict[str, Any],
     reliable: List[dict],
     candidates: List[dict],
 ) -> None:
@@ -299,6 +393,7 @@ def write_docx(
         f"音频时长：{duration or '未读取到'}",
         f"模型：Whisper {model_name}",
         f"处理：{'降噪增强；' if enhanced else ''}{'严格过滤低置信片段' if strict else '普通过滤'}",
+        f"质量摘要：{format_quality_summary(summary)}",
         f"生成时间：{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}",
     ]
     for item in meta:
@@ -346,6 +441,7 @@ def transcribe_file(
     enhance: bool,
     strict: bool,
     log: Callable[[str], None],
+    loaded_model: Optional[Any] = None,
 ) -> Dict[str, Path]:
     if not audio_path.exists():
         raise FileNotFoundError(audio_path)
@@ -364,10 +460,14 @@ def transcribe_file(
         log("开始降噪增强音频。")
         source_for_asr = enhance_audio(ffmpeg, audio_path, run_dir, log)
 
-    whisper = import_whisper()
-    log(f"加载 Whisper 模型：{model_name}。首次使用会下载模型，请耐心等待。")
-    model = whisper.load_model(model_name)
-    log("模型加载完成，开始识别。")
+    if loaded_model is None:
+        whisper = import_whisper()
+        log(f"加载 Whisper 模型：{model_name}。首次使用会下载模型，请耐心等待。")
+        model = whisper.load_model(model_name)
+        log("模型加载完成，开始识别。")
+    else:
+        model = loaded_model
+        log("复用已加载模型，开始识别。")
 
     result = model.transcribe(
         str(source_for_asr),
@@ -385,6 +485,8 @@ def transcribe_file(
 
     reliable, candidates, discarded, all_segments = classify_segments(result.get("segments", []), strict=strict)
     log(f"识别完成：可靠片段 {len(reliable)} 条，低置信候选 {len(candidates)} 条，丢弃幻觉片段 {len(discarded)} 条。")
+    summary = build_quality_summary(reliable, candidates, discarded, duration)
+    log("质量摘要：" + format_quality_summary(summary))
 
     stem = clean_filename(audio_path.stem)
     raw_json = run_dir / f"{stem}_raw.json"
@@ -403,6 +505,7 @@ def transcribe_file(
                 "model": model_name,
                 "enhance": enhance,
                 "strict": strict,
+                "summary": summary,
                 "reliable": reliable,
                 "candidates": candidates,
                 "discarded": discarded,
@@ -416,7 +519,7 @@ def transcribe_file(
     write_txt(transcript_txt, "正式转写", reliable, "未检测到可靠、连续、可确认的中文语音内容。")
     write_txt(candidates_txt, "低置信候选片段（仅供人工核听参考）", candidates, "无低置信候选片段。")
     write_srt(srt_path, reliable)
-    write_docx(docx_path, audio_path, duration, model_name, enhance, strict, reliable, candidates)
+    write_docx(docx_path, audio_path, duration, model_name, enhance, strict, summary, reliable, candidates)
 
     outputs = {
         "run_dir": run_dir,
@@ -432,6 +535,83 @@ def transcribe_file(
     return outputs
 
 
+def transcribe_batch(
+    audio_paths: Sequence[Path],
+    output_dir: Path,
+    model_name: str,
+    enhance: bool,
+    strict: bool,
+    log: Callable[[str], None],
+) -> Dict[str, Any]:
+    if not audio_paths:
+        raise ValueError("没有可转写的音频文件。")
+
+    output_dir.mkdir(parents=True, exist_ok=True)
+    batch_stamp = now_stamp()
+    log(f"批量任务开始：{len(audio_paths)} 个文件。")
+    whisper = import_whisper()
+    log(f"加载 Whisper 模型：{model_name}。首次使用会下载模型，请耐心等待。")
+    model = whisper.load_model(model_name)
+    log("模型加载完成。")
+
+    items: List[Dict[str, Any]] = []
+    errors: List[Dict[str, Any]] = []
+    for index, audio_path in enumerate(audio_paths, start=1):
+        log(f"处理 {index}/{len(audio_paths)}：{audio_path}")
+        if not is_supported_audio(audio_path):
+            log(f"提示：{audio_path.name} 的扩展名不在常见支持列表内，将继续尝试。")
+        try:
+            outputs = transcribe_file(
+                audio_path=audio_path,
+                output_dir=output_dir,
+                model_name=model_name,
+                enhance=enhance,
+                strict=strict,
+                log=log,
+                loaded_model=model,
+            )
+            items.append(
+                {
+                    "source": str(audio_path),
+                    "status": "ok",
+                    "run_dir": str(outputs["run_dir"]),
+                    "docx": str(outputs["docx"]),
+                    "txt": str(outputs["txt"]),
+                    "candidates": str(outputs["candidates"]),
+                    "srt": str(outputs["srt"]),
+                    "report": str(outputs["report"]),
+                    "raw": str(outputs["raw"]),
+                }
+            )
+        except Exception as exc:
+            message = str(exc)
+            log(f"处理失败：{audio_path}；{message}")
+            error_item = {"source": str(audio_path), "status": "error", "error": message}
+            items.append(error_item)
+            errors.append(error_item)
+
+    manifest = output_dir / f"batch_manifest_{batch_stamp}.json"
+    manifest.write_text(
+        json.dumps(
+            {
+                "created_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                "model": model_name,
+                "enhance": enhance,
+                "strict": strict,
+                "total": len(audio_paths),
+                "succeeded": len(audio_paths) - len(errors),
+                "failed": len(errors),
+                "items": items,
+            },
+            ensure_ascii=False,
+            indent=2,
+        ),
+        encoding="utf-8",
+    )
+    log(f"批量清单：{manifest}")
+    return {"manifest": manifest, "items": items, "errors": errors}
+
+
 class App(tk.Tk):
     def __init__(self) -> None:
         super().__init__()
@@ -440,6 +620,7 @@ class App(tk.Tk):
         self.minsize(720, 500)
         self.log_queue: "queue.Queue[str]" = queue.Queue()
         self.worker: Optional[threading.Thread] = None
+        self.selected_audio_paths: List[Path] = []
 
         self.audio_var = tk.StringVar()
         self.output_var = tk.StringVar(value=str(DEFAULT_OUTPUT_DIR))
@@ -456,7 +637,7 @@ class App(tk.Tk):
         top = ttk.Frame(self)
         top.pack(fill="x", **pad)
         ttk.Label(top, text=APP_TITLE, font=("Microsoft YaHei UI", 16, "bold")).pack(anchor="w")
-        ttk.Label(top, text="本地离线识别，默认输出 Word、TXT、SRT 和 JSON。").pack(anchor="w", pady=(4, 0))
+        ttk.Label(top, text="本地离线识别，可单个或批量输出 Word、TXT、SRT 和 JSON。").pack(anchor="w", pady=(4, 0))
 
         form = ttk.Frame(self)
         form.pack(fill="x", **pad)
@@ -506,9 +687,18 @@ class App(tk.Tk):
 
     def choose_audio(self) -> None:
         filetypes = [("音频/视频文件", " ".join(SUPPORTED_AUDIO)), ("所有文件", "*.*")]
-        path = filedialog.askopenfilename(title="选择音频文件", filetypes=filetypes)
-        if path:
-            self.audio_var.set(path)
+        paths = filedialog.askopenfilenames(title="选择音频文件（可多选）", filetypes=filetypes)
+        if paths:
+            self.selected_audio_paths = [Path(path) for path in paths]
+            self.audio_var.set(describe_audio_paths(self.selected_audio_paths))
+
+    def get_audio_paths(self) -> List[Path]:
+        raw = self.audio_var.get().strip()
+        if self.selected_audio_paths:
+            selected_display = describe_audio_paths(self.selected_audio_paths)
+            if raw == selected_display or (len(self.selected_audio_paths) == 1 and raw == str(self.selected_audio_paths[0])):
+                return list(self.selected_audio_paths)
+        return parse_audio_paths_text(raw)
 
     def choose_output(self) -> None:
         path = filedialog.askdirectory(title="选择输出目录")
@@ -544,33 +734,60 @@ class App(tk.Tk):
             messagebox.showinfo(APP_TITLE, "正在转写，请等待当前任务完成。")
             return
 
-        audio = Path(self.audio_var.get().strip('" '))
+        audio_paths = self.get_audio_paths()
         output_dir = Path(self.output_var.get().strip('" '))
-        if not audio.exists():
-            messagebox.showerror(APP_TITLE, "请选择存在的音频文件。")
+        if not audio_paths:
+            messagebox.showerror(APP_TITLE, "请选择至少一个音频文件。")
             return
 
+        missing = [path for path in audio_paths if not path.exists()]
+        if missing:
+            messagebox.showerror(APP_TITLE, "以下文件不存在：\n" + "\n".join(str(path) for path in missing[:8]))
+            return
+
+        unsupported = [path for path in audio_paths if not is_supported_audio(path)]
+        if unsupported:
+            names = "\n".join(path.name for path in unsupported[:8])
+            keep_going = messagebox.askyesno(APP_TITLE, f"以下文件扩展名不在常见支持列表内，是否继续尝试？\n\n{names}")
+            if not keep_going:
+                return
+
+        output_dir.mkdir(parents=True, exist_ok=True)
+        self.selected_audio_paths = list(audio_paths)
+        self.audio_var.set(describe_audio_paths(audio_paths))
+
+        if len(audio_paths) > 1:
+            self.clear_log()
+
         self.start_button.configure(state="disabled")
-        self.status_var.set("转写中")
-        self.log("开始任务。")
+        self.status_var.set(f"转写中：0/{len(audio_paths)}")
+        self.log(f"开始任务：{len(audio_paths)} 个文件。")
 
         def job() -> None:
             try:
-                outputs = transcribe_file(
-                    audio_path=audio,
+                result = transcribe_batch(
+                    audio_paths=audio_paths,
                     output_dir=output_dir,
                     model_name=self.model_var.get(),
                     enhance=self.enhance_var.get(),
                     strict=self.strict_var.get(),
                     log=self.log,
                 )
-                self.log("任务完成。")
-                self.after(0, lambda: self.status_var.set(f"完成：{outputs['run_dir']}"))
-                self.after(0, lambda: messagebox.showinfo(APP_TITLE, f"转写完成。\n\n输出目录：\n{outputs['run_dir']}"))
+                failed = len(result["errors"])
+                succeeded = len(audio_paths) - failed
+                self.log(f"任务完成：成功 {succeeded} 个，失败 {failed} 个。")
+                self.after(0, lambda: self.status_var.set(f"完成：成功 {succeeded}/{len(audio_paths)}"))
+                if failed:
+                    message = f"转写完成，但有 {failed} 个文件失败。\n\n批量清单：\n{result['manifest']}"
+                    self.after(0, lambda msg=message: messagebox.showwarning(APP_TITLE, msg))
+                else:
+                    message = f"转写完成。\n\n批量清单：\n{result['manifest']}"
+                    self.after(0, lambda msg=message: messagebox.showinfo(APP_TITLE, msg))
             except Exception as exc:
-                self.log("错误：" + str(exc))
+                error_message = str(exc)
+                self.log("错误：" + error_message)
                 self.after(0, lambda: self.status_var.set("出错"))
-                self.after(0, lambda: messagebox.showerror(APP_TITLE, str(exc)))
+                self.after(0, lambda msg=error_message: messagebox.showerror(APP_TITLE, msg))
             finally:
                 self.after(0, lambda: self.start_button.configure(state="normal"))
 
@@ -579,23 +796,31 @@ class App(tk.Tk):
 
 
 def main_cli(args: argparse.Namespace) -> int:
-    audio = Path(args.audio)
+    audio_paths = [Path(item) for item in args.audio]
     output = Path(args.output or DEFAULT_OUTPUT_DIR)
 
     def log(message: str) -> None:
         print(f"[{datetime.now().strftime('%H:%M:%S')}] {message}", flush=True)
 
-    transcribe_file(audio, output, args.model, args.enhance, args.strict, log)
-    return 0
+    missing = [path for path in audio_paths if not path.exists()]
+    if missing:
+        for path in missing:
+            print(f"文件不存在：{path}", file=sys.stderr)
+        return 2
+
+    result = transcribe_batch(audio_paths, output, args.model, args.enhance, args.strict, log)
+    return 1 if result["errors"] else 0
 
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="中文语音转文字小工具")
-    parser.add_argument("audio", nargs="?", help="音频文件路径；不填则启动图形界面")
+    parser.add_argument("audio", nargs="*", help="一个或多个音频文件路径；不填则启动图形界面")
     parser.add_argument("-o", "--output", help="输出目录")
     parser.add_argument("-m", "--model", default="base", choices=["tiny", "base", "small", "medium"])
-    parser.add_argument("--enhance", action="store_true", help="启用降噪增强")
-    parser.add_argument("--strict", action="store_true", help="严格过滤低置信片段")
+    parser.add_argument("--enhance", dest="enhance", action="store_true", default=True, help="启用降噪增强（默认开启）")
+    parser.add_argument("--no-enhance", dest="enhance", action="store_false", help="关闭降噪增强")
+    parser.add_argument("--strict", dest="strict", action="store_true", default=True, help="严格过滤低置信片段（默认开启）")
+    parser.add_argument("--loose", dest="strict", action="store_false", help="关闭严格过滤，保留更多片段")
     return parser.parse_args()
 
 
