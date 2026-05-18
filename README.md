@@ -11,6 +11,10 @@ Drag in Chinese meeting, class, interview, or voice-note audio on Windows and ge
 
 ![Main GUI screenshot](assets/screenshots/gui-main.png)
 
+## Demo
+
+![speech-to-text-zh demo](assets/demo/speech-to-text-zh-demo.gif)
+
 ## Fast Start
 
 Download the latest Windows package from [Releases](https://github.com/yystudio-cyber/speech-to-text-zh/releases), or run from source:
