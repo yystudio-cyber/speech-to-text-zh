@@ -32,4 +32,6 @@ output/
 
 !README.md
 !requirements.txt
+!examples/
+!examples/**
 !设计说明.md

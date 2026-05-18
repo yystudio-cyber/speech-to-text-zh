@@ -1,0 +1,17 @@
+{
+  "source": "meeting-demo.m4a",
+  "model": "base",
+  "enhance": true,
+  "strict": true,
+  "summary": {
+    "quality_label": "needs_review",
+    "audio_seconds": 18.0,
+    "reliable_count": 3,
+    "candidate_count": 1,
+    "discarded_count": 0,
+    "reliable_seconds": 14.0,
+    "candidate_seconds": 2.0,
+    "discarded_seconds": 0.0,
+    "reliable_ratio_of_audio": 0.7778
+  }
+}
