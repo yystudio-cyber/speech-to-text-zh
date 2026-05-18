@@ -13,6 +13,7 @@ def main() -> int:
     print("Speech-to-text tool self check")
     print("=" * 32)
     checks = [
+        check_import("speech_to_text_zh"),
         check_import("tkinter"),
         check_import("whisper"),
         check_import("imageio_ffmpeg"),

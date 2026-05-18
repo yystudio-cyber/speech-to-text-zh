@@ -1,0 +1,29 @@
+[build-system]
+requires = ["setuptools>=69", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "speech-to-text-zh"
+version = "0.2.0"
+description = "Local Chinese speech-to-text tool with Whisper, GUI, CLI, and Word/TXT/SRT/JSON output."
+readme = "README.md"
+requires-python = ">=3.10"
+license = { file = "LICENSE" }
+authors = [{ name = "yystudio-cyber" }]
+keywords = ["whisper", "speech-to-text", "chinese", "windows", "tkinter", "srt", "docx"]
+dependencies = [
+  "openai-whisper>=20250625",
+  "imageio-ffmpeg>=0.6.0",
+  "python-docx>=1.2.0",
+]
+
+[project.urls]
+Homepage = "https://github.com/yystudio-cyber/speech-to-text-zh"
+Repository = "https://github.com/yystudio-cyber/speech-to-text-zh"
+Issues = "https://github.com/yystudio-cyber/speech-to-text-zh/issues"
+
+[project.scripts]
+speech-to-text-zh = "speech_to_text_zh.cli:main"
+
+[tool.setuptools]
+packages = ["speech_to_text_zh"]

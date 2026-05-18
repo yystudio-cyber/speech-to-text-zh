@@ -28,6 +28,15 @@ install_deps.bat
 
 If you already have `openai-whisper`, `imageio-ffmpeg`, and `python-docx`, you can skip that step.
 
+Install as a local Python command:
+
+```bat
+python -m pip install .
+speech-to-text-zh --help
+```
+
+For a Windows `.exe`, run the `Build Windows App` GitHub Action from the repo's Actions tab. It uploads a `speech-to-text-zh-windows` artifact containing `speech-to-text-zh.exe`.
+
 ## Run
 
 GUI:
@@ -39,14 +48,23 @@ run.bat
 CLI:
 
 ```bat
-python app.py "C:\path\to\audio.m4a" --output ".\output" --model base --enhance --strict
+python -m speech_to_text_zh "C:\path\to\audio.m4a" --output ".\output" --model base --enhance --strict
 ```
 
 Batch mode:
 
 ```bat
-python app.py "C:\path\to\a.m4a" "C:\path\to\b.mp3" --output ".\output" --model base
+python -m speech_to_text_zh "C:\path\to\a.m4a" "C:\path\to\b.mp3" --output ".\output" --model base
 ```
+
+## Developer workflow
+
+```bat
+python -m compileall -q app.py speech_to_text_zh tests
+python -m unittest discover -s tests -v
+```
+
+The repo includes GitHub Actions for lightweight CI and a manual Windows executable build.
 
 ## Why it is built this way
 
